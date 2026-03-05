@@ -1,6 +1,6 @@
 # MTG Card Scanner
 
-Phase 1 adds a local SQLite database for card metadata, inventory, scan events, and sync outbox records.
+Phase 2 adds a minimal Tkinter desktop window with a live OpenCV webcam preview and image capture flow.
 
 ## Setup
 
@@ -10,39 +10,38 @@ Create or activate a virtual environment, then install dependencies:
 python -m pip install -r requirements.txt
 ```
 
-## Initialize the local database
+## Run the webcam app
+
+Start the Tkinter scanner UI:
+
+```powershell
+python -m scanner_gui.app
+```
+
+The app will:
+
+- Open the default webcam with `cv2.VideoCapture(0)`.
+- Show a live preview in the window.
+- Let you click `Capture` to freeze the current frame and save it to `data/scans/raw_<timestamp>.jpg`.
+- Let you click `Retake` to resume the live preview.
+
+If the webcam cannot be opened, the window shows a clear error message instead of the preview.
+
+## Capture output
+
+Captured images are written to `data/scans/`. The app creates `data/` and `data/scans/` automatically at runtime if they do not already exist.
+
+## Local database commands
 
 This project stores the SQLite database at `data/local.sqlite`.
+
+Initialize the database:
 
 ```powershell
 python -m db.init_db
 ```
 
-The init script creates the `data/` directory if it does not already exist and applies Alembic migrations to the latest revision.
-
-## Run migrations manually
-
-Upgrade to the latest migration:
-
-```powershell
-alembic upgrade head
-```
-
-Show the current revision:
-
-```powershell
-alembic current
-```
-
-Create a new migration after model changes:
-
-```powershell
-alembic revision --autogenerate -m "describe change"
-```
-
-## Smoke test
-
-Run the database smoke test to initialize the database, insert a dummy card and inventory row, then print the stored quantity:
+Run the smoke test:
 
 ```powershell
 python scripts/smoke_test_db.py
