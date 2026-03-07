@@ -12,11 +12,11 @@ from cv.rectify import rectify_card, save_scan
 
 
 WINDOW_TITLE = "MTG Scanner (Phase 3)"
-PREVIEW_SIZE = (960, 720)
+PREVIEW_SIZE = (1280, 720)
 CARD_RATIO = 63.0 / 88.0
-TARGET_CAMERA_WIDTH = 1920
-TARGET_CAMERA_HEIGHT = 1080
-TARGET_CAMERA_FPS = 30
+TARGET_CAMERA_WIDTH = 1280
+TARGET_CAMERA_HEIGHT = 720
+TARGET_CAMERA_FPS = 60
 BLUR_THRESHOLD = 120.0
 
 
@@ -24,9 +24,8 @@ class ScannerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(WINDOW_TITLE)
-        self.root.geometry("1000x760")
-        self.root.minsize(820, 620)
-
+        self.root.geometry("1360x900")
+        self.root.minsize(1100, 760)
         self.capture: cv2.VideoCapture | None = None
         self.current_frame: np.ndarray | None = None
         self.preview_image: tk.PhotoImage | None = None
@@ -106,7 +105,7 @@ class ScannerApp:
         self._schedule_preview()
 
     def _schedule_preview(self) -> None:
-        self.preview_job = self.root.after(30, self._update_preview)
+        self.preview_job = self.root.after(16, self._update_preview)
 
     def _update_preview(self) -> None:
         self.preview_job = None
