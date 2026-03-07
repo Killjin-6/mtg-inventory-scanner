@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-from typing import Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 from PIL import Image
@@ -52,6 +52,82 @@ def normalize_set_code(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", text).upper()[:8]
 
 
+def normalize_collector_number(text: str) -> str:
+    cleaned = re.sub(r"\s+", "", text)
+    if "/" in cleaned:
+        cleaned = cleaned.split("/", 1)[0]
+    return re.sub(r"[^A-Za-z0-9]", "", cleaned)[:16]
+
+
+def normalize_lang(text: str) -> str:
+    return re.sub(r"[^A-Za-z]", "", text).upper()[:3]
+
+
+def parse_bottom_metadata(text: str) -> dict[str, str]:
+    compact_text = " ".join(text.strip().split())
+    collector_match = re.search(r"([A-Za-z]?\d+[A-Za-z]?)(?:\s*/\s*(\d+))?", compact_text)
+    collector_text = ""
+    if collector_match:
+        collector_text = collector_match.group(0).replace(" ", "")
+
+    rarity_match = re.search(r"\b([CUMRLMS])\b", compact_text.upper())
+    rarity = rarity_match.group(1) if rarity_match else ""
+    upper_text = compact_text.upper()
+    tokens = re.findall(r"[A-Z0-9]+", upper_text)
+
+    set_code = ""
+    if collector_match:
+        trailing_text = upper_text[collector_match.end() :]
+        trailing_tokens = re.findall(r"[A-Z0-9]+", trailing_text)
+    else:
+        trailing_tokens = tokens
+
+    candidate_tokens = []
+    for token in trailing_tokens:
+        normalized_token = normalize_set_code(token)
+        if not normalized_token:
+            continue
+        if normalized_token in {rarity, normalize_lang(token)}:
+            continue
+        if normalized_token == normalize_collector_number(collector_text):
+            continue
+        if len(normalized_token) > 5:
+            continue
+        candidate_tokens.append(normalized_token)
+
+    if candidate_tokens:
+        set_code = candidate_tokens[0]
+
+    lang_match = re.search(r"\b(EN|ES|FR|DE|IT|PT|JA|KO|RU|ZHS|ZHT)\b", compact_text.upper())
+    lang = lang_match.group(1) if lang_match else ""
+
+    if not set_code:
+        for token in reversed(tokens):
+            normalized_token = normalize_set_code(token)
+            if normalized_token in {rarity, lang, normalize_collector_number(collector_text)}:
+                continue
+            if len(normalized_token) > 5:
+                continue
+            set_code = normalized_token
+            break
+
+    return {
+        "printed_collector_text": collector_text,
+        "collector_number": normalize_collector_number(collector_text),
+        "rarity": rarity,
+        "set_code": normalize_set_code(set_code),
+        "lang": normalize_lang(lang),
+    }
+
+
+def extract_parsed_metadata(ocr_results: OCRResults) -> dict[str, Any]:
+    metadata_text, metadata_confidence = ocr_results.get("bottom_metadata_roi", ("", 0.0))
+    parsed = parse_bottom_metadata(metadata_text)
+    parsed["bottom_metadata_text"] = metadata_text
+    parsed["bottom_metadata_confidence"] = metadata_confidence
+    return parsed
+
+
 class EasyOCRReader:
     def __init__(self, languages: Iterable[str] | None = None, gpu: bool | None = None) -> None:
         availability_error = ocr_availability_message()
@@ -78,8 +154,6 @@ class EasyOCRReader:
         results: OCRResults = {}
         for roi_name, roi_image in roi_images.items():
             text, confidence = self._read_single_roi(roi_image)
-            if roi_name == "set_code_roi":
-                text = normalize_set_code(text)
             results[roi_name] = (text, confidence)
 
         return results

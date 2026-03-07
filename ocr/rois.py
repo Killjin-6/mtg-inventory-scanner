@@ -13,16 +13,10 @@ ROI_DEFINITIONS = {
         "y_start": 0.00,
         "y_end": 0.18,
     },
-    "set_code_roi": {
+    "bottom_metadata_roi": {
         "x_start": 0.05,
-        "x_end": 0.32,
-        "y_start": 0.82,
-        "y_end": 0.98,
-    },
-    "collector_number_roi": {
-        "x_start": 0.55,
-        "x_end": 0.98,
-        "y_start": 0.82,
+        "x_end": 0.30,
+        "y_start": 0.915,
         "y_end": 0.98,
     },
 }

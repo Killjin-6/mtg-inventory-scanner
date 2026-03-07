@@ -38,9 +38,20 @@ The phone page uses a file input with camera capture support. After you take a p
 - fixes EXIF orientation
 - converts the image to RGB JPEG
 - saves it as `raw_<timestamp>.jpg` in `data/scans/`
-- prefers a matching rectified image if one already exists
-- runs OCR on the chosen image when EasyOCR is available
-- returns JSON with the saved path, OCR fields, and confidence values
+- attempts local card detection and perspective rectification
+- saves `rectified_<timestamp>.jpg` next to the raw image when detection succeeds
+- runs OCR on the rectified image when available, otherwise falls back to raw
+- returns JSON with raw/rectified paths, detection status, OCR fields, and confidence values
+
+The upload flow is now:
+
+1. Save raw upload
+2. Detect the card contour
+3. Rectify the card perspective when detection succeeds
+4. Run OCR on the rectified image
+5. Fall back to OCR on the raw image if detection or rectification fails
+6. Resolve the card against the local SQLite catalog
+7. Confirm and add the resolved printing to local inventory
 
 ## Scryfall local catalog
 
@@ -92,9 +103,16 @@ To improve blurry captures, the app keeps a short rolling buffer of recent previ
 
 - OCR uses relative ROIs sized from the saved image.
 - `name_roi` reads the top band of the card.
-- `collector_number_roi` reads the bottom-right band of the card.
+- `bottom_metadata_roi` reads the bottom-left metadata strip.
+- The printed metadata strip is the primary print-identification zone and may include:
+  - collector number
+  - rarity
+  - set code
+  - language
 - If a matching rectified image exists for the captured raw image, OCR uses the rectified image instead of the raw file.
-- The GUI shows OCR text for both ROIs, per-ROI confidence, and overall confidence.
+- Matching now relies primarily on normalized `set_code + collector_number` against the local SQLite Scryfall catalog.
+- If metadata parsing fails, the scanner still returns OCR text and an unresolved or fallback resolution result.
+- After a card is resolved, the phone page can confirm the match and increment local inventory quantity while recording a `scan_event`.
 
 ## Python 3.14 note
 

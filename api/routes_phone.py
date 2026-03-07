@@ -7,10 +7,20 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from PIL import Image, ImageOps
+from pydantic import BaseModel
+from sqlalchemy import select
 
+try:
+    import cv2
+except Exception:  # pragma: no cover - depends on local environment
+    cv2 = None
+
+from cv.detect import detect_card_quad
+from cv.rectify import rectify_card
 from db.card_resolution import resolve_card_printing
+from db.models import CardPrinting, InventoryItem, ScanEvent
 from db.repo import SessionLocal
-from ocr.easyocr_reader import OCRResults, get_easyocr_reader, ocr_availability_message
+from ocr.easyocr_reader import OCRResults, extract_parsed_metadata, get_easyocr_reader, ocr_availability_message
 
 router = APIRouter()
 
@@ -47,6 +57,15 @@ def overall_confidence(results: OCRResults) -> float:
     if not results:
         return 0.0
     return sum(confidence for _, confidence in results.values()) / len(results)
+
+
+class ConfirmAddRequest(BaseModel):
+    scryfall_id: str
+    image_path: str | None = None
+    ocr_name: str | None = None
+    ocr_set_code: str | None = None
+    ocr_collector_number: str | None = None
+    confidence: float | None = None
 
 
 @router.get("/phone", response_class=HTMLResponse)
@@ -132,6 +151,10 @@ async def phone_page() -> HTMLResponse:
       background: #8fb5a3;
       cursor: default;
     }
+    .secondary-button {
+      margin-top: 12px;
+      background: #243b2f;
+    }
     .file-name {
       margin: 0 0 14px;
       color: var(--muted);
@@ -185,11 +208,24 @@ async def phone_page() -> HTMLResponse:
       <div id="file-name" class="file-name">No photo selected.</div>
       <button id="submit-button" type="submit" disabled>Upload Selected Photo</button>
     </form>
+    <button id="confirm-button" class="secondary-button" type="button" disabled>Confirm / Add To Inventory</button>
     <div id="status" class="status">Ready.</div>
     <section class="results">
       <div class="result-row">
         <div class="result-label">Used Image</div>
         <div id="used-image" class="result-value">None</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Detection Status</div>
+        <div id="detection-status" class="result-value">failed</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Rectified Saved</div>
+        <div id="rectified-saved" class="result-value">false</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Rectified Path</div>
+        <div id="rectified-path" class="result-value"></div>
       </div>
       <div class="result-row">
         <div class="result-label">Name</div>
@@ -200,20 +236,32 @@ async def phone_page() -> HTMLResponse:
         <div id="name-confidence" class="result-value">0.00</div>
       </div>
       <div class="result-row">
+        <div class="result-label">Bottom Metadata OCR</div>
+        <div id="metadata-result" class="result-value"></div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Metadata Confidence</div>
+        <div id="metadata-confidence" class="result-value">0.00</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Printed Collector Text</div>
+        <div id="printed-collector-text" class="result-value"></div>
+      </div>
+      <div class="result-row">
         <div class="result-label">Collector Number</div>
         <div id="collector-result" class="result-value"></div>
       </div>
       <div class="result-row">
-        <div class="result-label">Collector Confidence</div>
-        <div id="collector-confidence" class="result-value">0.00</div>
+        <div class="result-label">Rarity</div>
+        <div id="rarity-result" class="result-value"></div>
       </div>
       <div class="result-row">
         <div class="result-label">Set Code</div>
         <div id="set-code-result" class="result-value"></div>
       </div>
       <div class="result-row">
-        <div class="result-label">Set Code Confidence</div>
-        <div id="set-code-confidence" class="result-value">0.00</div>
+        <div class="result-label">Language</div>
+        <div id="lang-result" class="result-value"></div>
       </div>
       <div class="result-row">
         <div class="result-label">Overall Confidence</div>
@@ -235,35 +283,60 @@ async def phone_page() -> HTMLResponse:
         <div class="result-label">Resolved Set / Number</div>
         <div id="resolved-card-printing" class="result-value"></div>
       </div>
+      <div class="result-row">
+        <div class="result-label">Inventory Quantity</div>
+        <div id="inventory-quantity" class="result-value">0</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Last Add Status</div>
+        <div id="add-status" class="result-value">Not added</div>
+      </div>
     </section>
   </main>
   <script>
     const form = document.getElementById("capture-form");
     const input = document.getElementById("photo-input");
     const button = document.getElementById("submit-button");
+    const confirmButton = document.getElementById("confirm-button");
     const status = document.getElementById("status");
     const fileName = document.getElementById("file-name");
     const usedImage = document.getElementById("used-image");
+    const detectionStatus = document.getElementById("detection-status");
+    const rectifiedSaved = document.getElementById("rectified-saved");
+    const rectifiedPath = document.getElementById("rectified-path");
     const nameResult = document.getElementById("name-result");
     const nameConfidence = document.getElementById("name-confidence");
+    const metadataResult = document.getElementById("metadata-result");
+    const metadataConfidence = document.getElementById("metadata-confidence");
+    const printedCollectorText = document.getElementById("printed-collector-text");
     const collectorResult = document.getElementById("collector-result");
-    const collectorConfidence = document.getElementById("collector-confidence");
+    const rarityResult = document.getElementById("rarity-result");
     const setCodeResult = document.getElementById("set-code-result");
-    const setCodeConfidence = document.getElementById("set-code-confidence");
+    const langResult = document.getElementById("lang-result");
     const overallConfidence = document.getElementById("overall-confidence");
     const resolutionStatus = document.getElementById("resolution-status");
     const matchType = document.getElementById("match-type");
     const resolvedCardName = document.getElementById("resolved-card-name");
     const resolvedCardPrinting = document.getElementById("resolved-card-printing");
+    const inventoryQuantity = document.getElementById("inventory-quantity");
+    const addStatus = document.getElementById("add-status");
+    let latestResult = null;
 
     function setResults(data) {
+      latestResult = data;
       usedImage.textContent = data.used_image_path || "None";
+      detectionStatus.textContent = data.detection_status || "failed";
+      rectifiedSaved.textContent = String(data.rectified_saved ?? false);
+      rectifiedPath.textContent = data.rectified_path || "";
       nameResult.textContent = data.ocr?.name?.text || "";
       nameConfidence.textContent = (data.ocr?.name?.confidence ?? 0).toFixed(2);
-      collectorResult.textContent = data.ocr?.collector_number?.text || "";
-      collectorConfidence.textContent = (data.ocr?.collector_number?.confidence ?? 0).toFixed(2);
-      setCodeResult.textContent = data.ocr?.set_code?.text || "";
-      setCodeConfidence.textContent = (data.ocr?.set_code?.confidence ?? 0).toFixed(2);
+      metadataResult.textContent = data.ocr?.bottom_metadata?.text || "";
+      metadataConfidence.textContent = (data.ocr?.bottom_metadata?.confidence ?? 0).toFixed(2);
+      printedCollectorText.textContent = data.metadata?.printed_collector_text || "";
+      collectorResult.textContent = data.metadata?.collector_number || "";
+      rarityResult.textContent = data.metadata?.rarity || "";
+      setCodeResult.textContent = data.metadata?.set_code || "";
+      langResult.textContent = data.metadata?.lang || "";
       overallConfidence.textContent = (data.ocr?.overall_confidence ?? 0).toFixed(2);
       resolutionStatus.textContent = data.resolution?.status || "unresolved";
       matchType.textContent = data.resolution?.match_type || "none";
@@ -273,6 +346,9 @@ async def phone_page() -> HTMLResponse:
       } else {
         resolvedCardPrinting.textContent = "";
       }
+      inventoryQuantity.textContent = String(data.inventory?.quantity ?? 0);
+      addStatus.textContent = data.inventory?.status || "Not added";
+      confirmButton.disabled = !data.resolution?.card?.scryfall_id;
     }
 
     input.addEventListener("change", () => {
@@ -326,6 +402,46 @@ async def phone_page() -> HTMLResponse:
         }
       }
     });
+
+    confirmButton.addEventListener("click", async () => {
+      if (!latestResult?.resolution?.card?.scryfall_id) {
+        addStatus.textContent = "No resolved card to add.";
+        return;
+      }
+
+      confirmButton.disabled = true;
+      addStatus.textContent = "Adding to inventory...";
+
+      try {
+        const payload = {
+          scryfall_id: latestResult.resolution.card.scryfall_id,
+          image_path: latestResult.used_image_path,
+          ocr_name: latestResult.ocr?.name?.text || "",
+          ocr_set_code: latestResult.metadata?.set_code || "",
+          ocr_collector_number: latestResult.metadata?.collector_number || "",
+          confidence: latestResult.ocr?.overall_confidence ?? 0
+        };
+
+        const response = await fetch("/confirm-add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          addStatus.textContent = data.detail || "Add failed.";
+          return;
+        }
+
+        inventoryQuantity.textContent = String(data.quantity);
+        addStatus.textContent = data.status;
+      } catch (error) {
+        addStatus.textContent = "Add failed.";
+      } finally {
+        confirmButton.disabled = !latestResult?.resolution?.card?.scryfall_id;
+      }
+    });
   </script>
 </body>
 </html>
@@ -353,16 +469,45 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
     raw_path = SCANS_DIR / filename
     normalized.save(raw_path, format="JPEG", quality=JPEG_QUALITY, optimize=True)
 
-    used_image_path = preferred_ocr_image(raw_path)
-    processing_status = "Saved upload. Rectified image not found; OCR used the raw image."
-    if used_image_path != raw_path:
-        processing_status = "Saved upload. OCR used the matching rectified image."
+    rectified_path = raw_path.with_name(raw_path.name.replace("raw_", "rectified_", 1))
+    rectified_saved = False
+    detection_status = "failed"
+
+    if cv2 is not None:
+        try:
+            image_bgr = cv2.imread(str(raw_path))
+            quad_points = detect_card_quad(image_bgr)
+            if quad_points is not None:
+                rectified_bgr = rectify_card(image_bgr, quad_points)
+                if cv2.imwrite(str(rectified_path), rectified_bgr):
+                    rectified_saved = True
+                    detection_status = "ok"
+        except Exception:
+            detection_status = "failed"
+
+    used_image_path = rectified_path if rectified_saved else raw_path
+    ocr_source_image = "rectified" if rectified_saved else "raw"
+    processing_status = (
+        "Saved upload. Card detection and rectification succeeded; OCR used the rectified image."
+        if rectified_saved
+        else "Saved upload. Card detection failed; OCR used the raw image."
+    )
 
     ocr_results: OCRResults = {}
+    parsed_metadata = {
+        "bottom_metadata_text": "",
+        "bottom_metadata_confidence": 0.0,
+        "printed_collector_text": "",
+        "collector_number": "",
+        "rarity": "",
+        "set_code": "",
+        "lang": "",
+    }
     ocr_error = ocr_availability_message()
     if ocr_error is None:
         try:
             ocr_results = get_easyocr_reader().read_rois(used_image_path)
+            parsed_metadata = extract_parsed_metadata(ocr_results)
             processing_status += " OCR complete."
         except Exception as exc:
             ocr_error = f"OCR failed: {exc}"
@@ -372,10 +517,11 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
     with SessionLocal() as session:
         resolution = resolve_card_printing(
             session,
-            set_code=ocr_results.get("set_code_roi", ("", 0.0))[0],
-            collector_number=ocr_results.get("collector_number_roi", ("", 0.0))[0],
+            set_code=parsed_metadata.get("set_code"),
+            collector_number=parsed_metadata.get("collector_number"),
             name=ocr_results.get("name_roi", ("", 0.0))[0],
-            lang="en",
+            rarity=parsed_metadata.get("rarity"),
+            lang=parsed_metadata.get("lang") or "en",
         )
 
     return {
@@ -383,22 +529,78 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
         "saved_path": str(raw_path),
         "timestamp": timestamp,
         "used_image_path": str(used_image_path),
+        "rectified_saved": rectified_saved,
+        "rectified_path": str(rectified_path) if rectified_saved else None,
+        "detection_status": detection_status,
+        "ocr_source_image": ocr_source_image,
         "processing_status": processing_status,
         "ocr_error": ocr_error,
+        "metadata": {
+            "bottom_metadata_text": parsed_metadata["bottom_metadata_text"],
+            "printed_collector_text": parsed_metadata["printed_collector_text"],
+            "collector_number": parsed_metadata["collector_number"],
+            "rarity": parsed_metadata["rarity"],
+            "set_code": parsed_metadata["set_code"],
+            "lang": parsed_metadata["lang"],
+        },
         "resolution": resolution,
+        "inventory": {
+            "quantity": 0,
+            "status": "Not added",
+        },
         "ocr": {
             "name": {
                 "text": ocr_results.get("name_roi", ("", 0.0))[0],
                 "confidence": ocr_results.get("name_roi", ("", 0.0))[1],
             },
-            "collector_number": {
-                "text": ocr_results.get("collector_number_roi", ("", 0.0))[0],
-                "confidence": ocr_results.get("collector_number_roi", ("", 0.0))[1],
-            },
-            "set_code": {
-                "text": ocr_results.get("set_code_roi", ("", 0.0))[0],
-                "confidence": ocr_results.get("set_code_roi", ("", 0.0))[1],
+            "bottom_metadata": {
+                "text": ocr_results.get("bottom_metadata_roi", ("", 0.0))[0],
+                "confidence": ocr_results.get("bottom_metadata_roi", ("", 0.0))[1],
             },
             "overall_confidence": overall_confidence(ocr_results),
         },
     }
+
+
+@router.post("/confirm-add")
+async def confirm_add(payload: ConfirmAddRequest) -> dict[str, object]:
+    with SessionLocal() as session:
+        card = session.execute(
+            select(CardPrinting).where(CardPrinting.scryfall_id == payload.scryfall_id).limit(1)
+        ).scalar_one_or_none()
+        if card is None:
+            raise HTTPException(status_code=404, detail="Resolved card was not found in the local catalog.")
+
+        inventory_item = session.execute(
+            select(InventoryItem).where(InventoryItem.card_printing_id == card.id).limit(1)
+        ).scalar_one_or_none()
+
+        if inventory_item is None:
+            inventory_item = InventoryItem(card_printing_id=card.id, quantity=1)
+            session.add(inventory_item)
+        else:
+            inventory_item.quantity += 1
+
+        scan_event = ScanEvent(
+            image_path=payload.image_path,
+            ocr_name=payload.ocr_name,
+            ocr_set_code=payload.ocr_set_code,
+            ocr_collector_number=payload.ocr_collector_number,
+            confidence=payload.confidence,
+            resolved_scryfall_id=payload.scryfall_id,
+            status="confirmed",
+        )
+        session.add(scan_event)
+        session.commit()
+        session.refresh(inventory_item)
+
+        return {
+            "status": f"Added {card.name}. Inventory quantity is now {inventory_item.quantity}.",
+            "quantity": inventory_item.quantity,
+            "card": {
+                "scryfall_id": card.scryfall_id,
+                "name": card.name,
+                "set_code": card.set_code,
+                "collector_number": card.collector_number,
+            },
+        }
