@@ -113,6 +113,9 @@ To improve blurry captures, the app keeps a short rolling buffer of recent previ
 - Matching now relies primarily on normalized `set_code + collector_number` against the local SQLite Scryfall catalog.
 - If metadata parsing fails, the scanner still returns OCR text and an unresolved or fallback resolution result.
 - After a card is resolved, the phone page can confirm the match and increment local inventory quantity while recording a `scan_event`.
+- Exact matches can be confirmed directly.
+- Fallback matches now require candidate review and selection before adding to inventory.
+- Unresolved scans remain non-addable until resolution improves.
 
 ## Python 3.14 note
 

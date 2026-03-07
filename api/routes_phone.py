@@ -188,6 +188,22 @@ async def phone_page() -> HTMLResponse:
       color: var(--ink);
       word-break: break-word;
     }
+    .candidate-list {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+    .candidate-option {
+      display: block;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+    .candidate-option input {
+      margin-right: 10px;
+    }
   </style>
 </head>
 <body>
@@ -291,6 +307,10 @@ async def phone_page() -> HTMLResponse:
         <div class="result-label">Last Add Status</div>
         <div id="add-status" class="result-value">Not added</div>
       </div>
+      <section id="candidate-list" class="candidate-list" hidden>
+        <div class="result-label">Review Candidates</div>
+        <div id="candidate-options"></div>
+      </section>
     </section>
   </main>
   <script>
@@ -320,10 +340,55 @@ async def phone_page() -> HTMLResponse:
     const resolvedCardPrinting = document.getElementById("resolved-card-printing");
     const inventoryQuantity = document.getElementById("inventory-quantity");
     const addStatus = document.getElementById("add-status");
+    const candidateList = document.getElementById("candidate-list");
+    const candidateOptions = document.getElementById("candidate-options");
     let latestResult = null;
+    let selectedCandidateId = null;
+
+    function renderCandidates(data) {
+      candidateOptions.innerHTML = "";
+      selectedCandidateId = null;
+
+      const needsReview = Boolean(data.resolution?.needs_review) || data.resolution?.status === "fallback_match";
+      const candidates = data.resolution?.candidates || [];
+
+      if (!needsReview || candidates.length === 0) {
+        candidateList.hidden = true;
+        return;
+      }
+
+      candidateList.hidden = false;
+
+      candidates.forEach((candidate, index) => {
+        const wrapper = document.createElement("label");
+        wrapper.className = "candidate-option";
+
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "candidate";
+        radio.value = candidate.scryfall_id;
+        radio.addEventListener("change", () => {
+          selectedCandidateId = candidate.scryfall_id;
+          confirmButton.disabled = false;
+        });
+
+        const text = document.createElement("span");
+        text.textContent = `${candidate.name} (${candidate.set_code} / ${candidate.collector_number})`;
+
+        wrapper.appendChild(radio);
+        wrapper.appendChild(text);
+        candidateOptions.appendChild(wrapper);
+
+        if (index === 0) {
+          radio.checked = true;
+          selectedCandidateId = candidate.scryfall_id;
+        }
+      });
+    }
 
     function setResults(data) {
       latestResult = data;
+      selectedCandidateId = data.resolution?.card?.scryfall_id || null;
       usedImage.textContent = data.used_image_path || "None";
       detectionStatus.textContent = data.detection_status || "failed";
       rectifiedSaved.textContent = String(data.rectified_saved ?? false);
@@ -348,7 +413,17 @@ async def phone_page() -> HTMLResponse:
       }
       inventoryQuantity.textContent = String(data.inventory?.quantity ?? 0);
       addStatus.textContent = data.inventory?.status || "Not added";
-      confirmButton.disabled = !data.resolution?.card?.scryfall_id;
+      renderCandidates(data);
+
+      const isExact = data.resolution?.status === "exact_match";
+      const needsReview = Boolean(data.resolution?.needs_review) || data.resolution?.status === "fallback_match";
+      if (isExact) {
+        confirmButton.disabled = !data.resolution?.card?.scryfall_id;
+      } else if (needsReview) {
+        confirmButton.disabled = !selectedCandidateId;
+      } else {
+        confirmButton.disabled = true;
+      }
     }
 
     input.addEventListener("change", () => {
@@ -404,7 +479,9 @@ async def phone_page() -> HTMLResponse:
     });
 
     confirmButton.addEventListener("click", async () => {
-      if (!latestResult?.resolution?.card?.scryfall_id) {
+      const needsReview = Boolean(latestResult?.resolution?.needs_review) || latestResult?.resolution?.status === "fallback_match";
+      const scryfallId = needsReview ? selectedCandidateId : latestResult?.resolution?.card?.scryfall_id;
+      if (!scryfallId) {
         addStatus.textContent = "No resolved card to add.";
         return;
       }
@@ -414,7 +491,7 @@ async def phone_page() -> HTMLResponse:
 
       try {
         const payload = {
-          scryfall_id: latestResult.resolution.card.scryfall_id,
+          scryfall_id: scryfallId,
           image_path: latestResult.used_image_path,
           ocr_name: latestResult.ocr?.name?.text || "",
           ocr_set_code: latestResult.metadata?.set_code || "",
@@ -439,7 +516,12 @@ async def phone_page() -> HTMLResponse:
       } catch (error) {
         addStatus.textContent = "Add failed.";
       } finally {
-        confirmButton.disabled = !latestResult?.resolution?.card?.scryfall_id;
+        const isExact = latestResult?.resolution?.status === "exact_match";
+        if (isExact) {
+          confirmButton.disabled = !latestResult?.resolution?.card?.scryfall_id;
+        } else {
+          confirmButton.disabled = !selectedCandidateId;
+        }
       }
     });
   </script>
