@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Dict, Iterable, Tuple
 
 import numpy as np
@@ -47,6 +48,10 @@ def _should_use_gpu() -> bool:
         return False
 
 
+def normalize_set_code(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", text).upper()[:8]
+
+
 class EasyOCRReader:
     def __init__(self, languages: Iterable[str] | None = None, gpu: bool | None = None) -> None:
         availability_error = ocr_availability_message()
@@ -72,7 +77,10 @@ class EasyOCRReader:
 
         results: OCRResults = {}
         for roi_name, roi_image in roi_images.items():
-            results[roi_name] = self._read_single_roi(roi_image)
+            text, confidence = self._read_single_roi(roi_image)
+            if roi_name == "set_code_roi":
+                text = normalize_set_code(text)
+            results[roi_name] = (text, confidence)
 
         return results
 

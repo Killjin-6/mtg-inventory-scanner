@@ -8,6 +8,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from PIL import Image, ImageOps
 
+from db.card_resolution import resolve_card_printing
+from db.repo import SessionLocal
 from ocr.easyocr_reader import OCRResults, get_easyocr_reader, ocr_availability_message
 
 router = APIRouter()
@@ -206,8 +208,32 @@ async def phone_page() -> HTMLResponse:
         <div id="collector-confidence" class="result-value">0.00</div>
       </div>
       <div class="result-row">
+        <div class="result-label">Set Code</div>
+        <div id="set-code-result" class="result-value"></div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Set Code Confidence</div>
+        <div id="set-code-confidence" class="result-value">0.00</div>
+      </div>
+      <div class="result-row">
         <div class="result-label">Overall Confidence</div>
         <div id="overall-confidence" class="result-value">0.00</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Resolution Status</div>
+        <div id="resolution-status" class="result-value">Unresolved</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Match Type</div>
+        <div id="match-type" class="result-value">None</div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Resolved Card</div>
+        <div id="resolved-card-name" class="result-value"></div>
+      </div>
+      <div class="result-row">
+        <div class="result-label">Resolved Set / Number</div>
+        <div id="resolved-card-printing" class="result-value"></div>
       </div>
     </section>
   </main>
@@ -222,7 +248,13 @@ async def phone_page() -> HTMLResponse:
     const nameConfidence = document.getElementById("name-confidence");
     const collectorResult = document.getElementById("collector-result");
     const collectorConfidence = document.getElementById("collector-confidence");
+    const setCodeResult = document.getElementById("set-code-result");
+    const setCodeConfidence = document.getElementById("set-code-confidence");
     const overallConfidence = document.getElementById("overall-confidence");
+    const resolutionStatus = document.getElementById("resolution-status");
+    const matchType = document.getElementById("match-type");
+    const resolvedCardName = document.getElementById("resolved-card-name");
+    const resolvedCardPrinting = document.getElementById("resolved-card-printing");
 
     function setResults(data) {
       usedImage.textContent = data.used_image_path || "None";
@@ -230,7 +262,17 @@ async def phone_page() -> HTMLResponse:
       nameConfidence.textContent = (data.ocr?.name?.confidence ?? 0).toFixed(2);
       collectorResult.textContent = data.ocr?.collector_number?.text || "";
       collectorConfidence.textContent = (data.ocr?.collector_number?.confidence ?? 0).toFixed(2);
+      setCodeResult.textContent = data.ocr?.set_code?.text || "";
+      setCodeConfidence.textContent = (data.ocr?.set_code?.confidence ?? 0).toFixed(2);
       overallConfidence.textContent = (data.ocr?.overall_confidence ?? 0).toFixed(2);
+      resolutionStatus.textContent = data.resolution?.status || "unresolved";
+      matchType.textContent = data.resolution?.match_type || "none";
+      resolvedCardName.textContent = data.resolution?.card?.name || "";
+      if (data.resolution?.card) {
+        resolvedCardPrinting.textContent = `${data.resolution.card.set_code} / ${data.resolution.card.collector_number}`;
+      } else {
+        resolvedCardPrinting.textContent = "";
+      }
     }
 
     input.addEventListener("change", () => {
@@ -327,6 +369,15 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
     else:
         processing_status += f" {ocr_error}"
 
+    with SessionLocal() as session:
+        resolution = resolve_card_printing(
+            session,
+            set_code=ocr_results.get("set_code_roi", ("", 0.0))[0],
+            collector_number=ocr_results.get("collector_number_roi", ("", 0.0))[0],
+            name=ocr_results.get("name_roi", ("", 0.0))[0],
+            lang="en",
+        )
+
     return {
         "filename": filename,
         "saved_path": str(raw_path),
@@ -334,6 +385,7 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
         "used_image_path": str(used_image_path),
         "processing_status": processing_status,
         "ocr_error": ocr_error,
+        "resolution": resolution,
         "ocr": {
             "name": {
                 "text": ocr_results.get("name_roi", ("", 0.0))[0],
@@ -342,6 +394,10 @@ async def capture_upload(image: UploadFile = File(...)) -> dict[str, object]:
             "collector_number": {
                 "text": ocr_results.get("collector_number_roi", ("", 0.0))[0],
                 "confidence": ocr_results.get("collector_number_roi", ("", 0.0))[1],
+            },
+            "set_code": {
+                "text": ocr_results.get("set_code_roi", ("", 0.0))[0],
+                "confidence": ocr_results.get("set_code_roi", ("", 0.0))[1],
             },
             "overall_confidence": overall_confidence(ocr_results),
         },
