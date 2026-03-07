@@ -128,6 +128,13 @@ async def phone_page() -> HTMLResponse:
       color: var(--muted);
       font-size: 0.95rem;
     }
+    .nav-link {
+      display: inline-block;
+      margin: 0 0 16px;
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }
     .native-input,
     button {
       width: 100%;
@@ -210,6 +217,7 @@ async def phone_page() -> HTMLResponse:
   <main class="panel">
     <h1>MTG Phone Capture</h1>
     <p>Take a photo with your phone camera and upload it directly to your PC scanner.</p>
+    <a class="nav-link" href="/inventory/view">View Inventory</a>
     <div class="guide">On iPhone Safari, tap Choose File first. Then pick Take Photo or Photo Library. After the photo is selected, tap Upload Selected Photo.</div>
     <form id="capture-form">
       <input

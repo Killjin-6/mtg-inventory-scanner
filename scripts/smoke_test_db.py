@@ -24,6 +24,15 @@ def main() -> None:
         ).scalar_one_or_none()
 
         if card is None:
+            card = session.execute(
+                select(CardPrinting).where(
+                    CardPrinting.set_code == "lea",
+                    CardPrinting.collector_number == "161",
+                    CardPrinting.lang == "en",
+                )
+            ).scalar_one_or_none()
+
+        if card is None:
             card = CardPrinting(
                 scryfall_id="dummy-scryfall-id",
                 oracle_id="dummy-oracle-id",
@@ -40,6 +49,11 @@ def main() -> None:
             session.add(card)
             session.flush()
 
+        item = session.execute(
+            select(InventoryItem).where(InventoryItem.card_printing_id == card.id)
+        ).scalar_one_or_none()
+
+        if item is None:
             item = InventoryItem(
                 card_printing_id=card.id,
                 quantity=3,
@@ -53,7 +67,7 @@ def main() -> None:
             session.commit()
 
         quantity = session.execute(
-            select(InventoryItem.quantity).join(CardPrinting).where(CardPrinting.scryfall_id == "dummy-scryfall-id")
+            select(InventoryItem.quantity).where(InventoryItem.card_printing_id == card.id)
         ).scalar_one()
         print(quantity)
 

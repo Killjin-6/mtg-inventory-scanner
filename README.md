@@ -35,6 +35,8 @@ http://<YOUR_PC_LAN_IP>:8000/phone
 The phone page uses a file input with camera capture support. After you take a photo, the server:
 
 - accepts the upload at `POST /capture`
+- serves inventory JSON at `GET /inventory`
+- serves a small inventory browser at `GET /inventory/view`
 - fixes EXIF orientation
 - converts the image to RGB JPEG
 - saves it as `raw_<timestamp>.jpg` in `data/scans/`
@@ -42,6 +44,46 @@ The phone page uses a file input with camera capture support. After you take a p
 - saves `rectified_<timestamp>.jpg` next to the raw image when detection succeeds
 - runs OCR on the rectified image when available, otherwise falls back to raw
 - returns JSON with raw/rectified paths, detection status, OCR fields, and confidence values
+
+The phone page also includes a `View Inventory` link that opens the HTML inventory browser.
+
+## Inventory browser
+
+The FastAPI inventory endpoints read from the same SQLite database used elsewhere in the project: `data/local.sqlite`.
+
+JSON endpoint:
+
+```text
+GET /inventory
+```
+
+Supported query parameters:
+
+- `q`: case-insensitive substring match on card name
+- `color`: one of `W`, `U`, `B`, `R`, `G`
+- `rarity`: one of `common`, `uncommon`, `rare`, `mythic`
+- `set`: exact `set_code`
+- `limit`: row limit, default `200`
+
+Example:
+
+```text
+http://<YOUR_PC_LAN_IP>:8000/inventory?q=bolt&color=R&rarity=common&set=lea&limit=50
+```
+
+HTML endpoint:
+
+```text
+GET /inventory/view
+```
+
+Open it directly:
+
+```text
+http://<YOUR_PC_LAN_IP>:8000/inventory/view
+```
+
+The HTML page provides a small mobile-friendly form for `q`, `color`, `rarity`, `set`, and `limit`, then shows matching inventory rows in a table.
 
 The upload flow is now:
 
