@@ -10,6 +10,72 @@ Create or activate a virtual environment, then install dependencies:
 python -m pip install -r requirements.txt
 ```
 
+## Phone capture upload
+
+This branch adds a small FastAPI server so your phone can take a photo and upload it to the same `data/scans/` folder used by the desktop scanner.
+
+Start the server on your PC:
+
+```powershell
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+Find your PC's LAN IP in PowerShell:
+
+```powershell
+ipconfig
+```
+
+Look for the `IPv4 Address` on your Wi-Fi adapter, then open this URL on your phone while both devices are on the same network:
+
+```text
+http://<YOUR_PC_LAN_IP>:8000/phone
+```
+
+The phone page uses a file input with camera capture support. After you take a photo, the server:
+
+- accepts the upload at `POST /capture`
+- fixes EXIF orientation
+- converts the image to RGB JPEG
+- saves it as `raw_<timestamp>.jpg` in `data/scans/`
+- prefers a matching rectified image if one already exists
+- runs OCR on the chosen image when EasyOCR is available
+- returns JSON with the saved path, OCR fields, and confidence values
+
+## Scryfall local catalog
+
+This branch also adds a bulk importer so card printings can be resolved locally from SQLite instead of hitting Scryfall for every scan.
+
+Initialize the database first:
+
+```powershell
+python -m db.init_db
+```
+
+Then import the Scryfall print catalog:
+
+```powershell
+python scripts/import_scryfall_bulk.py
+```
+
+What the importer does:
+
+- fetches Scryfall bulk metadata from `https://api.scryfall.com/bulk-data`
+- downloads the `default_cards` bulk file by default
+- caches the downloaded JSON in `data/scryfall/`
+- imports English printings into the existing `card_printing` table
+- upserts by `scryfall_id` so reruns refresh existing rows
+
+Useful options:
+
+```powershell
+python scripts/import_scryfall_bulk.py --source-file data\scryfall\default_cards.json
+python scripts/import_scryfall_bulk.py --all-languages
+python scripts/import_scryfall_bulk.py --bulk-type default_cards
+```
+
+`default_cards` is the recommended dataset here because it keeps print-level data suitable for set code + collector number matching without pulling every translated printing by default.
+
 ## Run the GUI
 
 Start the scanner:
@@ -19,6 +85,8 @@ python -m scanner_gui.app
 ```
 
 The GUI keeps a live webcam preview inside the Tkinter window. Clicking `Capture` saves a fresh `raw_<timestamp>.jpg` image to `data/scans/`, then starts OCR in a background thread so the preview stays responsive.
+
+To improve blurry captures, the app keeps a short rolling buffer of recent preview frames, computes a focus score, shows a live focus indicator, and saves the sharpest recent frame when you click `Capture`.
 
 ## OCR behavior
 

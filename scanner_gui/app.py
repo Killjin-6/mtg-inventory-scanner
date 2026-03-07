@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import queue
 import threading
 import tkinter as tk
@@ -20,6 +21,9 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SCANS_DIR = ROOT_DIR / "data" / "scans"
 PREVIEW_SIZE = (640, 480)
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+FRAME_BUFFER_SIZE = 8
+FOCUS_POOR_THRESHOLD = 80.0
+FOCUS_FAIR_THRESHOLD = 160.0
 
 
 def preferred_ocr_image(raw_path: Path) -> Path:
@@ -50,6 +54,19 @@ def overall_confidence(results: OCRResults) -> float:
     return sum(confidence for _, confidence in results.values()) / len(results)
 
 
+def focus_score(frame) -> float:
+    grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(grayscale, cv2.CV_64F).var())
+
+
+def focus_label(score: float) -> str:
+    if score < FOCUS_POOR_THRESHOLD:
+        return "Poor"
+    if score < FOCUS_FAIR_THRESHOLD:
+        return "Fair"
+    return "Good"
+
+
 class ScannerApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -58,6 +75,7 @@ class ScannerApp:
 
         self.camera = None
         self.current_frame = None
+        self.frame_buffer: deque[tuple[float, object]] = deque(maxlen=FRAME_BUFFER_SIZE)
         self.preview_image = None
         self.preview_running = False
         self.ocr_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -71,6 +89,7 @@ class ScannerApp:
         self.collector_conf_var = tk.StringVar(value="Collector confidence: 0.00")
         self.overall_conf_var = tk.StringVar(value="Overall confidence: 0.00")
         self.ocr_runtime_var = tk.StringVar(value=self._ocr_runtime_text())
+        self.focus_var = tk.StringVar(value="Focus: waiting for camera")
 
         container = ttk.Frame(root, padding=16)
         container.pack(fill="both", expand=True)
@@ -97,6 +116,7 @@ class ScannerApp:
 
         self.capture_button = ttk.Button(controls, text="Capture", command=self.capture)
         self.capture_button.pack(side="left")
+        ttk.Label(controls, textvariable=self.focus_var).pack(side="left", padx=(12, 0))
 
         details_frame = ttk.LabelFrame(content, text="Scan Results", padding=12)
         details_frame.grid(row=0, column=1, sticky="nsew")
@@ -108,23 +128,26 @@ class ScannerApp:
         ttk.Label(details_frame, textvariable=self.ocr_runtime_var, wraplength=280).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 10)
         )
+        ttk.Label(details_frame, textvariable=self.focus_var, wraplength=280).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
         ttk.Label(details_frame, textvariable=self.image_var, wraplength=280).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(0, 14)
+            row=3, column=0, columnspan=2, sticky="w", pady=(0, 14)
         )
 
-        ttk.Label(details_frame, text="Name").grid(row=3, column=0, sticky="nw", padx=(0, 8))
-        ttk.Label(details_frame, textvariable=self.name_text_var, wraplength=220).grid(row=3, column=1, sticky="w")
-        ttk.Label(details_frame, textvariable=self.name_conf_var).grid(row=4, column=1, sticky="w", pady=(2, 10))
+        ttk.Label(details_frame, text="Name").grid(row=4, column=0, sticky="nw", padx=(0, 8))
+        ttk.Label(details_frame, textvariable=self.name_text_var, wraplength=220).grid(row=4, column=1, sticky="w")
+        ttk.Label(details_frame, textvariable=self.name_conf_var).grid(row=5, column=1, sticky="w", pady=(2, 10))
 
-        ttk.Label(details_frame, text="Collector #").grid(row=5, column=0, sticky="nw", padx=(0, 8))
+        ttk.Label(details_frame, text="Collector #").grid(row=6, column=0, sticky="nw", padx=(0, 8))
         ttk.Label(details_frame, textvariable=self.collector_text_var, wraplength=220).grid(
-            row=5, column=1, sticky="w"
+            row=6, column=1, sticky="w"
         )
         ttk.Label(details_frame, textvariable=self.collector_conf_var).grid(
-            row=6, column=1, sticky="w", pady=(2, 10)
+            row=7, column=1, sticky="w", pady=(2, 10)
         )
 
-        ttk.Label(details_frame, textvariable=self.overall_conf_var).grid(row=7, column=0, columnspan=2, sticky="w")
+        ttk.Label(details_frame, textvariable=self.overall_conf_var).grid(row=8, column=0, columnspan=2, sticky="w")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._start_camera()
@@ -160,6 +183,9 @@ class ScannerApp:
         ok, frame = self.camera.read()
         if ok and frame is not None:
             self.current_frame = frame
+            score = focus_score(frame)
+            self.frame_buffer.append((score, frame.copy()))
+            self.focus_var.set(f"Focus: {focus_label(score)} ({score:.0f})")
             self._render_frame(frame)
         else:
             self.status_var.set("Camera preview stalled.")
@@ -167,27 +193,42 @@ class ScannerApp:
         self.root.after(30, self._update_preview)
 
     def _render_frame(self, frame) -> None:
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        preview = frame.copy()
+        height, width = preview.shape[:2]
+        guide_margin_x = int(width * 0.12)
+        guide_margin_y = int(height * 0.10)
+        cv2.rectangle(
+            preview,
+            (guide_margin_x, guide_margin_y),
+            (width - guide_margin_x, height - guide_margin_y),
+            (0, 220, 0),
+            2,
+        )
+        rgb_frame = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb_frame)
         image.thumbnail(PREVIEW_SIZE)
         self.preview_image = ImageTk.PhotoImage(image=image)
         self.preview_label.configure(image=self.preview_image, text="")
 
     def capture(self) -> None:
-        if self.current_frame is None:
+        if not self.frame_buffer:
             self.status_var.set("No camera frame available to capture.")
             return
 
         SCANS_DIR.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         raw_path = SCANS_DIR / f"raw_{timestamp}.jpg"
+        sharpest_score, sharpest_frame = max(self.frame_buffer, key=lambda item: item[0])
 
-        if not cv2.imwrite(str(raw_path), self.current_frame):
+        if not cv2.imwrite(str(raw_path), sharpest_frame):
             self.status_var.set("Failed to save captured image.")
             return
 
         self.image_var.set(f"Image: {raw_path}")
-        self.status_var.set("Capture saved. Running OCR in background...")
+        self.status_var.set(
+            f"Capture saved using sharpest recent frame ({focus_label(sharpest_score)}, {sharpest_score:.0f}). "
+            "Running OCR in background..."
+        )
         self._start_ocr(raw_path)
 
     def _start_ocr(self, raw_path: Path) -> None:
