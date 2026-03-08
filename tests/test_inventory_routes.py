@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
-from sqlalchemy import create_engine
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.datastructures import URL
 
 from api import routes_inventory
 from db.models import Base, CardPrinting, InventoryItem
@@ -106,6 +108,10 @@ class InventoryRoutesTest(unittest.IsolatedAsyncioTestCase):
         if self.db_path.exists():
             self.db_path.unlink()
 
+    @staticmethod
+    def build_request(path: str = "/inventory/view", query: str = "") -> SimpleNamespace:
+        return SimpleNamespace(url=URL(f"http://testserver{path}{'?' + query if query else ''}"))
+
     async def test_inventory_rows_returns_newest_first_with_expected_fields(self) -> None:
         rows = await routes_inventory.inventory_rows(limit=10)
 
@@ -138,7 +144,11 @@ class InventoryRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["quantity"], 3)
 
     async def test_inventory_view_renders_expected_content(self) -> None:
-        response = await routes_inventory.inventory_view(q="growth", limit=10)
+        response = await routes_inventory.inventory_view(
+            request=self.build_request(query="q=growth&limit=10"),
+            q="growth",
+            limit=10,
+        )
 
         self.assertEqual(response.status_code, 200)
         body = response.body.decode("utf-8")
@@ -146,6 +156,101 @@ class InventoryRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Back to /phone", body)
         self.assertIn("Beta Growth", body)
         self.assertIn("name=\"q\"", body)
+        self.assertIn("/inventory/update", body)
+        self.assertIn("value=\"increment\"", body)
+        self.assertIn("value=\"edit\"", body)
+        self.assertIn("name=\"reserved_quantity\"", body)
+        self.assertIn("name=\"condition\"", body)
+        self.assertIn("name=\"foil\"", body)
+
+    async def test_inventory_update_increment_redirects_and_updates_quantity(self) -> None:
+        response = await routes_inventory.inventory_update(
+            scryfall_id="card-alpha",
+            action="increment",
+            return_to="/inventory/view?q=bolt",
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/inventory/view?q=bolt")
+
+        with self.test_session_local() as session:
+            item = session.execute(select(InventoryItem).join(CardPrinting).where(CardPrinting.scryfall_id == "card-alpha")).scalar_one()
+        self.assertEqual(item.quantity, 4)
+
+    async def test_inventory_update_decrement_deletes_row_at_one(self) -> None:
+        response = await routes_inventory.inventory_update(
+            scryfall_id="card-gamma",
+            action="decrement",
+            return_to="/inventory/view",
+        )
+
+        self.assertEqual(response.status_code, 303)
+
+        with self.test_session_local() as session:
+            item = session.execute(select(InventoryItem).join(CardPrinting).where(CardPrinting.scryfall_id == "card-gamma")).scalar_one_or_none()
+        self.assertIsNone(item)
+
+    async def test_inventory_update_remove_deletes_row(self) -> None:
+        await routes_inventory.inventory_update(
+            scryfall_id="card-beta",
+            action="remove",
+            return_to="/inventory/view",
+        )
+
+        with self.test_session_local() as session:
+            item = session.execute(select(InventoryItem).join(CardPrinting).where(CardPrinting.scryfall_id == "card-beta")).scalar_one_or_none()
+        self.assertIsNone(item)
+
+    async def test_inventory_update_edit_updates_metadata(self) -> None:
+        response = await routes_inventory.inventory_update(
+            scryfall_id="card-alpha",
+            action="edit",
+            reserved_quantity=2,
+            foil=1,
+            condition="lp",
+            return_to="/inventory/view?q=bolt",
+        )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/inventory/view?q=bolt")
+
+        with self.test_session_local() as session:
+            item = session.execute(select(InventoryItem).join(CardPrinting).where(CardPrinting.scryfall_id == "card-alpha")).scalar_one()
+        self.assertEqual(item.reserved_quantity, 2)
+        self.assertEqual(item.foil, 1)
+        self.assertEqual(item.condition, "LP")
+
+    async def test_inventory_update_rejects_invalid_action(self) -> None:
+        with self.assertRaises(HTTPException) as context:
+            await routes_inventory.inventory_update(
+                scryfall_id="card-alpha",
+                action="teleport",
+                return_to="/inventory/view",
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
+
+    async def test_inventory_update_rejects_negative_reserved_quantity(self) -> None:
+        with self.assertRaises(HTTPException) as context:
+            await routes_inventory.inventory_update(
+                scryfall_id="card-alpha",
+                action="edit",
+                reserved_quantity=-1,
+                return_to="/inventory/view",
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
+
+    async def test_inventory_update_rejects_invalid_condition(self) -> None:
+        with self.assertRaises(HTTPException) as context:
+            await routes_inventory.inventory_update(
+                scryfall_id="card-alpha",
+                action="edit",
+                condition="minty",
+                return_to="/inventory/view",
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
 
 
 if __name__ == "__main__":

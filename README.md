@@ -20,6 +20,14 @@ Start the server on your PC:
 uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
+Optional auth for hosted or shared use:
+
+```powershell
+$env:MTG_AUTH_USERNAME="scanner"
+$env:MTG_AUTH_PASSWORD="choose-a-strong-password"
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
 Find your PC's LAN IP in PowerShell:
 
 ```powershell
@@ -46,6 +54,25 @@ The phone page uses a file input with camera capture support. After you take a p
 - returns JSON with raw/rectified paths, detection status, OCR fields, and confidence values
 
 The phone page also includes a `View Inventory` link that opens the HTML inventory browser.
+It now also includes a slide-out `Recent Scans` drawer on the same page so you can review recent uploads without leaving `/phone`.
+
+## Auth and Deployment Prep
+
+Auth is optional by default. If `MTG_AUTH_USERNAME` and `MTG_AUTH_PASSWORD` are both set, the app protects the phone and inventory routes with HTTP Basic auth.
+
+Current behavior:
+
+- no auth env vars set: routes stay open for local/LAN use
+- both auth env vars set: `/phone`, `/capture`, `/confirm-add`, `/scan-history`, `/inventory`, `/inventory/view`, and `/inventory/update` require Basic auth
+- `GET /healthz` stays open for deployment health checks
+
+Recommended deployment direction later:
+
+- put the app behind a reverse proxy such as Nginx, Caddy, or a managed platform ingress
+- terminate HTTPS at the proxy/platform
+- keep strong auth credentials in environment variables, not in code
+- move uploaded scan storage and secrets/config out of ad hoc local defaults before inviting outside users
+- keep SQLite only for early hosted experiments; move to a server-grade database if concurrent multi-user use becomes real
 
 ## Inventory browser
 
@@ -83,7 +110,15 @@ Open it directly:
 http://<YOUR_PC_LAN_IP>:8000/inventory/view
 ```
 
-The HTML page provides a small mobile-friendly form for `q`, `color`, `rarity`, `set`, and `limit`, then shows matching inventory rows in a table.
+The HTML page now follows the same visual direction as `/phone`, with a stronger header, cleaner filter card, and more polished table styling while keeping the same inline editing workflow.
+
+From the HTML inventory browser, each row also includes:
+
+- `+` to increment quantity
+- `-` to decrement quantity
+- `Remove` to delete the inventory row entirely
+- inline editors for `reserved_quantity`, `foil`, and `condition`
+- a `Save` action to update those metadata fields in place
 
 The upload flow is now:
 
@@ -155,6 +190,9 @@ To improve blurry captures, the app keeps a short rolling buffer of recent previ
 - Matching now relies primarily on normalized `set_code + collector_number` against the local SQLite Scryfall catalog.
 - If metadata parsing fails, the scanner still returns OCR text and an unresolved or fallback resolution result.
 - After a card is resolved, the phone page can confirm the match and increment local inventory quantity while recording a `scan_event`.
+- `scan_event` rows are now created for every upload attempt at `POST /capture`.
+- Confirming an add updates that scan event to `confirmed` when the client includes the returned `scan_event_id`.
+- Recent scan history is available from `GET /scan-history` and is used by the slide-out drawer in `/phone`.
 - Exact matches can be confirmed directly.
 - Fallback matches now require candidate review and selection before adding to inventory.
 - Unresolved scans remain non-addable until resolution improves.
